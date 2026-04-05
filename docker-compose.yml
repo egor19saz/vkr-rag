@@ -1,0 +1,78 @@
+version: "3.9"
+
+# ======================================================================
+# ВКР: RAG-система — полный стек в Docker Compose
+#
+# Запуск:
+#   docker-compose up --build
+#
+# Сервисы:
+#   grobid    → http://localhost:8070  (парсинг PDF)
+#   api       → http://localhost:8000  (REST API + Swagger)
+#   gradio    → http://localhost:7860  (веб-интерфейс)
+# ======================================================================
+
+services:
+
+  # ---------- GROBID ----------
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    container_name: vkr_grobid
+    ports:
+      - "8070:8070"
+    environment:
+      - JAVA_OPTS=-Xmx4g
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8070/api/isalive"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ---------- FastAPI REST API ----------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vkr_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # хранилище PDF, XML, ChromaDB
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
+      - GIGACHAT_SCOPE=${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      - GIGACHAT_MODEL=${GIGACHAT_MODEL:-GigaChat}
+      - GROBID_URL=http://grobid:8070
+    depends_on:
+      grobid:
+        condition: service_healthy
+    command: uvicorn api_server:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------- Gradio Web UI ----------
+  gradio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vkr_gradio
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - GIGACHAT_CREDENTIALS=${GIGACHAT_CREDENTIALS}
+      - GIGACHAT_SCOPE=${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      - GIGACHAT_MODEL=${GIGACHAT_MODEL:-GigaChat}
+      - GROBID_URL=http://grobid:8070
+    depends_on:
+      grobid:
+        condition: service_healthy
+    command: streamlit run streamlit_app.py
+    restart: unless-stopped

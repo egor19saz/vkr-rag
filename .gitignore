@@ -1,0 +1,9 @@
+.env
+data/chroma/
+data/xml/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.streamlit/secrets.toml
