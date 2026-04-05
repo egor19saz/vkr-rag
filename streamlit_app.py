@@ -54,7 +54,8 @@ st.markdown("""
 
 # ─── Конфигурация ─────────────────────────────────────────────
 def _get_cfg() -> dict:
-    creds, scope, model, grobid_url = "", "GIGACHAT_API_PERS", "GigaChat", "http://localhost:8070"
+    creds, scope, model = "", "GIGACHAT_API_PERS", "GigaChat"
+    grobid_url = "https://kermitt2-grobid.hf.space"
     try:
         creds      = st.secrets["gigachat"]["credentials"]
         scope      = st.secrets["gigachat"].get("scope", scope)
