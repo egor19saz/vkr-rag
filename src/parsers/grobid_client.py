@@ -44,7 +44,7 @@ class GROBIDClient:
     def is_alive(self) -> bool:
         """Проверить, запущен ли GROBID."""
         try:
-            resp = requests.get(f"{self.base_url}/api/isalive", timeout=5)
+            resp = requests.get(f"{self.base_url}/api/isalive", timeout=30)
             return resp.status_code == 200
         except requests.RequestException:
             return False
