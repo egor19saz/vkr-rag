@@ -135,10 +135,6 @@ class RAGPipeline:
         # Шаг 1: GROBID
         logger.info("[1/5] GROBID парсинг...")
         if not self.grobid.is_alive():
-            raise RuntimeError(
-                "GROBID недоступен. Запустите: "
-                "docker run -t --rm -p 8070:8070 lfoppiano/grobid:0.8.0"
-            )
         xml_text = self.grobid.process_pdf(pdf_path)
 
         # Опционально: сохранить XML
