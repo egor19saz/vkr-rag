@@ -135,6 +135,10 @@ class RAGPipeline:
         # Шаг 1: GROBID
         logger.info("[1/5] GROBID парсинг...")
         if not self.grobid.is_alive():
+          raise RuntimeError(
+            "GROBID недоступен. Убедитесь, что сервис запущен "
+            "или используйте публичный инстанс (kermitt2-grobid.hf.space)."
+          )
         xml_text = self.grobid.process_pdf(pdf_path)
 
         # Опционально: сохранить XML
