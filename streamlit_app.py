@@ -143,13 +143,13 @@ with st.sidebar:
     st.markdown("##### Загрузить статью")
     uploaded = st.file_uploader("PDF", type=["pdf"], label_visibility="collapsed")
 
-    if uploaded:
+if uploaded:
         if st.button("🚀 Индексировать", use_container_width=True, type="primary"):
-            if not grobid_ok:
-                st.error("Сначала запустите GROBID.")
-            elif not token_ok:
+            if not token_ok:
                 st.error("Добавьте токен GigaChat в secrets.toml.")
             else:
+                if not grobid_ok:
+                    st.warning("GROBID отвечает медленно, пробуем всё равно...")
                 pdf_dir = Path("./data/pdfs")
                 pdf_dir.mkdir(parents=True, exist_ok=True)
                 sp = pdf_dir / uploaded.name
