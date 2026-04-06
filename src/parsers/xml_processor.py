@@ -1,13 +1,3 @@
-"""
-XML Processor — разбирает TEI XML, который возвращает GROBID.
-
-Извлекает:
-  - Метаданные (авторы, название, аннотация, год, DOI)
-  - Структурированные секции (Introduction, Methods, Results, …)
-  - Параграфы с ролями (hypothesis / related_work / result / method / general)
-  - Библиографические ссылки
-"""
-
 from __future__ import annotations
 
 import logging
@@ -20,14 +10,10 @@ from lxml import etree
 
 logger = logging.getLogger(__name__)
 
-# TEI namespace
 TEI_NS = "http://www.tei-c.org/ns/1.0"
 NS = {"tei": TEI_NS}
 
 
-# ---------------------------------------------------------------------------
-# Data models
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Reference:
@@ -69,17 +55,13 @@ class ParsedDocument:
     sections:    list[Section] = field(default_factory=list)
     references:  list[Reference] = field(default_factory=list)
 
-    # -----------------------------------------------------------------------
-
     def all_paragraphs(self) -> list[Paragraph]:
-        """Все параграфы документа (плоский список)."""
         return [p for sec in self.sections for p in sec.paragraphs]
 
     def paragraphs_by_role(self, role: str) -> list[Paragraph]:
         return [p for p in self.all_paragraphs() if p.role == role]
 
     def to_plain_text(self) -> str:
-        """Весь текст документа одной строкой (для чанкинга)."""
         parts = [self.title, self.abstract]
         for sec in self.sections:
             parts.append(sec.title)
@@ -87,76 +69,100 @@ class ParsedDocument:
         return "\n\n".join(filter(None, parts))
 
 
-# ---------------------------------------------------------------------------
-# Classifier: определяем роль параграфа по секции + ключевым словам
-# ---------------------------------------------------------------------------
+
 
 _ROLE_PATTERNS: list[tuple[str, list[str]]] = [
     ("hypothesis", [
-        r"hypothes", r"proposes?\s+that", r"we\s+assume", r"предполага",
-        r"гипотез", r"мы\s+предполаг",
+        r"hypothes", r"we\s+propose", r"proposes?\s+that", r"we\s+assume",
+        r"our\s+hypothesis", r"предполага", r"гипотез", r"мы\s+предполаг",
+        r"we\s+conjecture", r"we\s+argue\s+that",
     ]),
     ("related_work", [
-        r"related\s+work", r"background", r"literature", r"previous\s+work",
+        r"related\s+work", r"background", r"literature\s+review",
+        r"previous\s+work", r"prior\s+work", r"existing\s+approach",
         r"обзор\s+литератур", r"смежные\s+работ", r"предыдущие\s+исследован",
+        r"recently\s+proposed", r"have\s+been\s+proposed",
     ]),
     ("result", [
-        r"result", r"finding", r"показал", r"результат", r"мы\s+обнаружил",
-        r"наши\s+результат",
+        r"result", r"finding", r"we\s+found", r"we\s+observe",
+        r"our\s+model\s+achieve", r"outperform", r"accuracy",
+        r"показал", r"результат", r"мы\s+обнаружил", r"наши\s+результат",
+        r"performance", r"improve", r"значительно\s+улучш",
     ]),
     ("method", [
-        r"method", r"approach", r"algorithm", r"метод", r"алгоритм",
-        r"подход", r"архитектур",
+        r"method", r"approach", r"algorithm", r"architecture",
+        r"we\s+use", r"we\s+employ", r"we\s+apply", r"we\s+train",
+        r"метод", r"алгоритм", r"подход", r"архитектур",
+        r"pipeline", r"framework", r"model\s+consist",
     ]),
 ]
 
 _SECTION_ROLE_MAP: dict[str, str] = {
-    "introduction":    "general",
-    "related work":    "related_work",
-    "background":      "related_work",
-    "methodology":     "method",
-    "methods":         "method",
-    "approach":        "method",
-    "experiments":     "result",
-    "results":         "result",
-    "evaluation":      "result",
-    "discussion":      "result",
-    "conclusion":      "general",
+    "introduction":     "general",
+    "related work":     "related_work",
+    "related":          "related_work",
+    "background":       "related_work",
+    "literature":       "related_work",
+    "methodology":      "method",
+    "methods":          "method",
+    "method":           "method",
+    "approach":         "method",
+    "model":            "method",
+    "architecture":     "method",
+    "proposed":         "method",
+    "experiments":      "result",
+    "experimental":     "result",
+    "results":          "result",
+    "result":           "result",
+    "evaluation":       "result",
+    "performance":      "result",
+    "discussion":       "result",
+    "ablation":         "result",
+    "analysis":         "result",
+    "conclusion":       "general",
+    "conclusions":      "general",
+    "future":           "general",
+    "limitation":       "general",
     # Russian
-    "введение":        "general",
-    "обзор литературы": "related_work",
-    "методология":     "method",
-    "методы":          "method",
-    "эксперименты":    "result",
-    "результаты":      "result",
-    "обсуждение":      "result",
-    "заключение":      "general",
+    "введение":         "general",
+    "обзор":            "related_work",
+    "методология":      "method",
+    "методы":           "method",
+    "предлагаемый":     "method",
+    "эксперимент":      "result",
+    "результат":        "result",
+    "оценка":           "result",
+    "обсуждение":       "result",
+    "заключение":       "general",
+    "вывод":            "general",
 }
 
 
 def _classify_paragraph(text: str, section_title: str) -> str:
-    """Определить роль параграфа."""
-    # 1. По заголовку секции
+    # 1. По заголовку секции (приоритет)
     norm_sec = section_title.lower()
     for key, role in _SECTION_ROLE_MAP.items():
         if key in norm_sec:
             return role
 
     # 2. По тексту параграфа
+    text_lower = text.lower()
+    scores = {"hypothesis": 0, "related_work": 0, "result": 0, "method": 0}
     for role, patterns in _ROLE_PATTERNS:
         for pat in patterns:
-            if re.search(pat, text, re.IGNORECASE):
-                return role
+            if re.search(pat, text_lower, re.IGNORECASE):
+                scores[role] += 1
+
+    best_role = max(scores, key=scores.get)
+    if scores[best_role] > 0:
+        return best_role
 
     return "general"
 
 
-# ---------------------------------------------------------------------------
-# Main parser
-# ---------------------------------------------------------------------------
+
 
 class TEIXMLProcessor:
-    """Разбирает TEI XML, сформированный GROBID."""
 
     def parse_file(self, xml_path: str | Path) -> ParsedDocument:
         xml_path = Path(xml_path)
@@ -168,14 +174,9 @@ class TEIXMLProcessor:
         root = etree.fromstring(xml_text.encode("utf-8"))
         return self._parse_root(root, source_file=source_file)
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _parse_root(self, root: etree._Element, source_file: str) -> ParsedDocument:
         doc = ParsedDocument(source_file=source_file)
 
-        # Метаданные заголовка
         header = root.find(".//tei:teiHeader", NS)
         if header is not None:
             doc.title    = self._extract_title(header)
@@ -185,25 +186,27 @@ class TEIXMLProcessor:
             doc.keywords = self._extract_keywords(header)
             doc.abstract = self._extract_abstract(header)
 
-        # Тело документа
         body = root.find(".//tei:body", NS)
         if body is not None:
             doc.sections = self._extract_sections(body)
 
-        # Библиографические ссылки
         back = root.find(".//tei:back", NS)
         if back is not None:
             doc.references = self._extract_references(back)
 
+        # Если keywords пустые — извлекаем из abstract/title
+        if not doc.keywords:
+            doc.keywords = self._extract_keywords_fallback(doc)
+
         logger.info(
-            "Разобран документ: '%s' (%d секций, %d ссылок)",
+            "Разобран документ: '%s' (%d секций, %d ссылок, %d ключевых слов)",
             doc.title[:60] if doc.title else source_file,
             len(doc.sections),
             len(doc.references),
+            len(doc.keywords),
         )
         return doc
 
-    # ---------- Метаданные ----------
 
     def _extract_title(self, header: etree._Element) -> str:
         el = header.find(".//tei:titleStmt/tei:title[@type='main']", NS)
@@ -222,11 +225,28 @@ class TEIXMLProcessor:
         return authors
 
     def _extract_year(self, header: etree._Element) -> str:
-        el = header.find(".//tei:date[@type='published']", NS)
-        if el is None:
-            el = header.find(".//tei:date", NS)
-        if el is not None:
-            return el.get("when", "") or self._text(el)
+        for el in header.findall(".//tei:date[@type='published']", NS):
+            when = el.get("when", "")
+            m = re.search(r"(\d{4})", when)
+            if m:
+                year = int(m.group(1))
+                if 1900 <= year <= 2025:
+                    return str(year)
+
+        for el in header.findall(".//tei:date", NS):
+            when = el.get("when", "")
+            m = re.search(r"(\d{4})", when)
+            if m:
+                year = int(m.group(1))
+                if 1900 <= year <= 2025:
+                    return str(year)
+
+        for el in header.findall(".//tei:date", NS):
+            m = re.search(r"(\d{4})", self._text(el))
+            if m:
+                year = int(m.group(1))
+                if 1900 <= year <= 2025:
+                    return str(year)
         return ""
 
     def _extract_doi(self, header: etree._Element) -> str:
@@ -235,17 +255,34 @@ class TEIXMLProcessor:
 
     def _extract_keywords(self, header: etree._Element) -> list[str]:
         kws = []
-        for el in header.findall(".//tei:keywords/tei:term", NS):
-            t = self._text(el)
-            if t:
-                kws.append(t)
-        return kws
+        for sel in [
+            ".//tei:keywords/tei:term",
+            ".//tei:keywords/tei:item",
+            ".//tei:textClass/tei:keywords/tei:term",
+            ".//tei:textClass/tei:keywords",
+        ]:
+            for el in header.findall(sel, NS):
+                t = self._text(el)
+                if t and len(t) < 60:
+                    for kw in re.split(r"[;,]", t):
+                        kw = kw.strip()
+                        if kw and len(kw) > 2:
+                            kws.append(kw)
+        return list(dict.fromkeys(kws))  
+
+    def _extract_keywords_fallback(self, doc: "ParsedDocument") -> list[str]:
+        if not doc.title:
+            return []
+        stopwords = {"with", "from", "using", "based", "for", "the", "and",
+                     "deep", "via", "into", "over", "toward", "towards"}
+        words = re.findall(r"[A-Za-z]{5,}", doc.title)
+        kws = [w for w in words if w.lower() not in stopwords]
+        return list(dict.fromkeys(kws))[:8]
 
     def _extract_abstract(self, header: etree._Element) -> str:
         el = header.find(".//tei:abstract", NS)
         return self._inner_text(el)
 
-    # ---------- Тело ----------
 
     def _extract_sections(self, body: etree._Element) -> list[Section]:
         sections: list[Section] = []
@@ -259,19 +296,29 @@ class TEIXMLProcessor:
                 text = self._inner_text(p_el)
                 if len(text) < 20:
                     continue
-                ref_ids = [
-                    r.get("{http://www.w3.org/XML/1998/namespace}id", "")
-                    for r in p_el.findall(".//tei:ref[@type='bibr']", NS)
-                ]
+
+                ref_ids = []
+                for r in p_el.findall(".//tei:ref[@type='bibr']", NS):
+                    target = r.get("target", "")
+                    if target.startswith("#"):
+                        ref_ids.append(target[1:])
+                    xml_id = r.get("{http://www.w3.org/XML/1998/namespace}id", "")
+                    if xml_id:
+                        ref_ids.append(xml_id)
+
                 role = _classify_paragraph(text, sec_title)
-                paragraphs.append(Paragraph(text=text, section=sec_title, role=role, ref_ids=ref_ids))
+                paragraphs.append(Paragraph(
+                    text=text,
+                    section=sec_title,
+                    role=role,
+                    ref_ids=list(set(ref_ids)),
+                ))
 
             if paragraphs:
                 sections.append(Section(title=sec_title, paragraphs=paragraphs))
 
         return sections
 
-    # ---------- Ссылки ----------
 
     def _extract_references(self, back: etree._Element) -> list[Reference]:
         refs: list[Reference] = []
@@ -297,11 +344,23 @@ class TEIXMLProcessor:
                         authors.append(name)
 
             year = ""
-            date_el = bibl.find(".//tei:date[@type='published']", NS)
-            if date_el is None:
-                date_el = bibl.find(".//tei:date", NS)
-            if date_el is not None:
-                year = date_el.get("when", "")[:4]
+            for date_el in bibl.findall(".//tei:date[@type='published']", NS):
+                when = date_el.get("when", "")
+                m = re.search(r"(\d{4})", when)
+                if m:
+                    y = int(m.group(1))
+                    if 1900 <= y <= 2025:
+                        year = str(y)
+                        break
+            if not year:
+                for date_el in bibl.findall(".//tei:date", NS):
+                    when = date_el.get("when", "")
+                    m = re.search(r"(\d{4})", when)
+                    if m:
+                        y = int(m.group(1))
+                        if 1900 <= y <= 2025:
+                            year = str(y)
+                            break
 
             doi_el = bibl.find(".//tei:idno[@type='DOI']", NS)
             doi = self._text(doi_el)
@@ -319,7 +378,6 @@ class TEIXMLProcessor:
             ))
         return refs
 
-    # ---------- Утилиты ----------
 
     @staticmethod
     def _text(el: Optional[etree._Element]) -> str:
@@ -329,7 +387,6 @@ class TEIXMLProcessor:
 
     @staticmethod
     def _inner_text(el: Optional[etree._Element]) -> str:
-        """Извлечь весь текст элемента вместе с дочерними тегами."""
         if el is None:
             return ""
         return " ".join(
