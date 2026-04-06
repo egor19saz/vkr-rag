@@ -17,7 +17,6 @@ NS = {"tei": TEI_NS}
 
 @dataclass
 class Reference:
-    """Библиографическая ссылка."""
     ref_id:  str
     title:   str = ""
     authors: list[str] = field(default_factory=list)
@@ -28,7 +27,6 @@ class Reference:
 
 @dataclass
 class Paragraph:
-    """Параграф с семантической ролью."""
     text:       str
     section:    str = ""
     role:       str = "general"   # hypothesis | related_work | result | method | general
@@ -37,14 +35,12 @@ class Paragraph:
 
 @dataclass
 class Section:
-    """Секция документа."""
     title:      str
     paragraphs: list[Paragraph] = field(default_factory=list)
 
 
 @dataclass
 class ParsedDocument:
-    """Результат разбора одного документа."""
     source_file: str
     title:       str = ""
     abstract:    str = ""
