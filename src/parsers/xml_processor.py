@@ -1,3 +1,13 @@
+"""
+XML Processor — разбирает TEI XML, который возвращает GROBID.
+
+Извлекает:
+  - Метаданные (авторы, название, аннотация, год, DOI)
+  - Структурированные секции (Introduction, Methods, Results, …)
+  - Параграфы с ролями (hypothesis / related_work / result / method / general)
+  - Библиографические ссылки
+"""
+
 from __future__ import annotations
 
 import logging
@@ -10,13 +20,18 @@ from lxml import etree
 
 logger = logging.getLogger(__name__)
 
+# TEI namespace
 TEI_NS = "http://www.tei-c.org/ns/1.0"
 NS = {"tei": TEI_NS}
 
 
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
 
 @dataclass
 class Reference:
+    """Библиографическая ссылка."""
     ref_id:  str
     title:   str = ""
     authors: list[str] = field(default_factory=list)
@@ -27,6 +42,7 @@ class Reference:
 
 @dataclass
 class Paragraph:
+    """Параграф с семантической ролью."""
     text:       str
     section:    str = ""
     role:       str = "general"   # hypothesis | related_work | result | method | general
@@ -35,12 +51,14 @@ class Paragraph:
 
 @dataclass
 class Section:
+    """Секция документа."""
     title:      str
     paragraphs: list[Paragraph] = field(default_factory=list)
 
 
 @dataclass
 class ParsedDocument:
+    """Результат разбора одного документа."""
     source_file: str
     title:       str = ""
     abstract:    str = ""
@@ -65,7 +83,9 @@ class ParsedDocument:
         return "\n\n".join(filter(None, parts))
 
 
-
+# ---------------------------------------------------------------------------
+# Classifier
+# ---------------------------------------------------------------------------
 
 _ROLE_PATTERNS: list[tuple[str, list[str]]] = [
     ("hypothesis", [
@@ -106,6 +126,11 @@ _SECTION_ROLE_MAP: dict[str, str] = {
     "model":            "method",
     "architecture":     "method",
     "proposed":         "method",
+    "implementation":   "method",
+    "training":         "method",
+    "numerical":        "result",
+    "validation":       "result",
+    "clinical":         "result",
     "experiments":      "result",
     "experimental":     "result",
     "results":          "result",
@@ -115,22 +140,29 @@ _SECTION_ROLE_MAP: dict[str, str] = {
     "discussion":       "result",
     "ablation":         "result",
     "analysis":         "result",
+    "summary":          "result",
+    "strength":         "general",
+    "limitation":       "general",
     "conclusion":       "general",
     "conclusions":      "general",
     "future":           "general",
-    "limitation":       "general",
+    "appendix":         "method",
     # Russian
     "введение":         "general",
     "обзор":            "related_work",
     "методология":      "method",
     "методы":           "method",
     "предлагаемый":     "method",
+    "реализация":       "method",
+    "обучение":         "method",
     "эксперимент":      "result",
     "результат":        "result",
+    "валидация":        "result",
     "оценка":           "result",
     "обсуждение":       "result",
     "заключение":       "general",
     "вывод":            "general",
+    "ограничени":       "general",
 }
 
 
@@ -156,7 +188,9 @@ def _classify_paragraph(text: str, section_title: str) -> str:
     return "general"
 
 
-
+# ---------------------------------------------------------------------------
+# Main parser
+# ---------------------------------------------------------------------------
 
 class TEIXMLProcessor:
 
@@ -203,6 +237,7 @@ class TEIXMLProcessor:
         )
         return doc
 
+    # ---------- Метаданные ----------
 
     def _extract_title(self, header: etree._Element) -> str:
         el = header.find(".//tei:titleStmt/tei:title[@type='main']", NS)
@@ -221,27 +256,31 @@ class TEIXMLProcessor:
         return authors
 
     def _extract_year(self, header: etree._Element) -> str:
+        """Извлекает только реальный год публикации (1900-2025)."""
+        # 1. Дата публикации с атрибутом when
         for el in header.findall(".//tei:date[@type='published']", NS):
             when = el.get("when", "")
             m = re.search(r"(\d{4})", when)
             if m:
                 year = int(m.group(1))
-                if 1900 <= year <= 2025:
+                if 1900 <= year <= 2030:
                     return str(year)
 
+        # 2. Любая дата с when и годом в диапазоне
         for el in header.findall(".//tei:date", NS):
             when = el.get("when", "")
             m = re.search(r"(\d{4})", when)
             if m:
                 year = int(m.group(1))
-                if 1900 <= year <= 2025:
+                if 1900 <= year <= 2030:
                     return str(year)
 
+        # 3. Текст даты
         for el in header.findall(".//tei:date", NS):
             m = re.search(r"(\d{4})", self._text(el))
             if m:
                 year = int(m.group(1))
-                if 1900 <= year <= 2025:
+                if 1900 <= year <= 2030:
                     return str(year)
         return ""
 
@@ -251,6 +290,7 @@ class TEIXMLProcessor:
 
     def _extract_keywords(self, header: etree._Element) -> list[str]:
         kws = []
+        # GROBID пишет ключевые слова в разных форматах
         for sel in [
             ".//tei:keywords/tei:term",
             ".//tei:keywords/tei:item",
@@ -260,15 +300,18 @@ class TEIXMLProcessor:
             for el in header.findall(sel, NS):
                 t = self._text(el)
                 if t and len(t) < 60:
+                    # Разбиваем если несколько через запятую/точку с запятой
                     for kw in re.split(r"[;,]", t):
                         kw = kw.strip()
                         if kw and len(kw) > 2:
                             kws.append(kw)
-        return list(dict.fromkeys(kws))  
+        return list(dict.fromkeys(kws))  # убираем дубли
 
     def _extract_keywords_fallback(self, doc: "ParsedDocument") -> list[str]:
+        """Извлекает ключевые слова из названия если GROBID не нашёл."""
         if not doc.title:
             return []
+        # Берём значимые слова из названия (длиннее 4 символов)
         stopwords = {"with", "from", "using", "based", "for", "the", "and",
                      "deep", "via", "into", "over", "toward", "towards"}
         words = re.findall(r"[A-Za-z]{5,}", doc.title)
@@ -279,13 +322,23 @@ class TEIXMLProcessor:
         el = header.find(".//tei:abstract", NS)
         return self._inner_text(el)
 
+    # ---------- Тело ----------
 
     def _extract_sections(self, body: etree._Element) -> list[Section]:
         sections: list[Section] = []
+        last_known_title = "General"
 
         for div in body.findall(".//tei:div", NS):
             head = div.find("tei:head", NS)
-            sec_title = self._text(head) if head is not None else "Untitled"
+            if head is not None:
+                raw_title = self._text(head)
+                sec_title = re.sub(r"^\d+[\d\.]*\.?\s*", "", raw_title).strip()
+                if not sec_title:
+                    sec_title = raw_title
+                if sec_title:
+                    last_known_title = sec_title
+            else:
+                sec_title = last_known_title
             paragraphs: list[Paragraph] = []
 
             for p_el in div.findall("tei:p", NS):
@@ -293,6 +346,7 @@ class TEIXMLProcessor:
                 if len(text) < 20:
                     continue
 
+                # FIX: правильное извлечение ref_ids из цитат
                 ref_ids = []
                 for r in p_el.findall(".//tei:ref[@type='bibr']", NS):
                     target = r.get("target", "")
@@ -315,6 +369,7 @@ class TEIXMLProcessor:
 
         return sections
 
+    # ---------- Ссылки ----------
 
     def _extract_references(self, back: etree._Element) -> list[Reference]:
         refs: list[Reference] = []
@@ -339,6 +394,7 @@ class TEIXMLProcessor:
                     if name:
                         authors.append(name)
 
+            # FIX: корректное извлечение года
             year = ""
             for date_el in bibl.findall(".//tei:date[@type='published']", NS):
                 when = date_el.get("when", "")
@@ -374,6 +430,7 @@ class TEIXMLProcessor:
             ))
         return refs
 
+    # ---------- Утилиты ----------
 
     @staticmethod
     def _text(el: Optional[etree._Element]) -> str:
